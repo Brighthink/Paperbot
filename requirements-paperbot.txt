@@ -1,0 +1,13 @@
+# Dependencies for manual Semantic Scholar/arXiv search and Markdown summaries.
+arxiv
+requests
+pymupdf
+openai
+pyyaml
+sentence-transformers
+doclayout-yolo          # CPU figure/table detection and cropping
+markdown                # render Markdown email bodies
+bleach                  # sanitize rendered HTML email bodies
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib

@@ -1,21 +1,24 @@
-"""One daily run of paperbot: fetch → dedupe → filter → quota → extract → summarize → publish.
-paperbot 하루 1회 실행 파이프라인 (cli.py가 호출).
+"""One manual paperbot run: fetch → dedupe → filter → quota → extract → summarize → save.
+수동 실행 1회의 논문 검색·필터링·요약·Markdown 저장 파이프라인 (cli.py가 호출).
 
 흐름: topic별 각 소스 fetch → uid dedupe + store 미처리분 필터 → relevance 필터(임베딩 → LLM judge)
-→ pending 대기열 + 쿼터 → 논문별 (extract → summarize → publish → store 기록).
-논문 하나가 실패해도 전체는 계속 진행하고, 전송 '설정' 오류만 실행 전체를 중단한다.
+→ pending 대기열 + 쿼터 → 논문별 (extract → summarize → Markdown 저장/메일 발송 → 상태 기록).
+논문 하나가 실패해도 전체는 계속 진행하고, 게시 설정이나 Gmail 인증 설정 오류는 실행 전체를 중단한다.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from . import chatdb, summarizer
 from .config import Config
 from .extractor import extract
 from .filter import RelevanceFilter
+from .gmail import GmailError, GmailSender
 from .models import Paper
 from .publisher import PublishConfigError, make_publisher
+from .publisher.markdown import markdown_path
 from . import replay as _replay   # [REPLAY] Zulip 되올리기 (한시적) — replay.py 참고
 from .sources import ArxivSource, SemanticScholarSource
 from .store import Store
@@ -95,20 +98,65 @@ def apply_quota(papers: list[Paper], quota, topics_by_name: dict | None = None) 
     return out
 
 
-def process_paper(cfg, store, publisher, paper, client) -> bool:
-    """단일 논문: extract → summarize → publish → store. 성공 시 True."""
+def process_paper(cfg, store, publisher, paper, client, gmail_sender: GmailSender | None = None) -> bool | None:
+    """단일 논문 처리. True=요약 완료, None=원문 정보 부족으로 필터, False=처리 실패."""
     try:
+        if gmail_sender is not None:
+            mail_status = store.email_delivery_status(paper.uid)
+            if mail_status == "sent":
+                logger.info("Gmail 이전 발송 확인 — 재요약·재전송 생략: %s", paper.uid)
+                store.mark_done(paper)
+                return True
+            if mail_status in {"sending", "unknown"}:
+                logger.warning("Gmail 발송 결과가 불확실해 재요약·재전송 생략: %s", paper.uid)
+                store.mark_done(paper)
+                return True
         extracted = extract(cfg, paper)
-        # abstract도 본문도 없으면 요약할 재료가 없다 — 무의미한(환각 위험) 요약 대신 skip.
-        # failed로 기록해 다음 실행 때 1회 재시도(S2가 abstract를 뒤늦게 채우는 경우 있음),
-        # 그래도 없으면 영구 skip.
-        if extracted.abstract_only and not paper.abstract:
-            logger.warning("본문·abstract 모두 확보 실패 — 발행하지 않음: %s", paper.uid)
-            store.mark_failed(paper, "본문/abstract 모두 없음")
-            return False
+        if extracted.abstract_only and not (paper.abstract or "").strip():
+            reason = "content filter: no abstract and no usable PDF text"
+            logger.info("본문 정보 부족 필터 — 초록과 판독 가능한 PDF 본문을 모두 확보하지 못함: %s", paper.uid)
+            store.mark_filtered(paper, reason)
+            return None
         summary = summarizer.summarize(cfg, paper, extracted, client=client)
         publisher.publish(paper, summary, abstract_only=extracted.abstract_only,
                           figures=extracted.figures)
+        if gmail_sender is not None:
+            mail_status = store.email_delivery_status(paper.uid)
+            if mail_status == "sent":
+                logger.info("Gmail 이전 발송 확인 — 재전송 생략: %s", paper.uid)
+            elif mail_status in {"sending", "unknown"}:
+                logger.warning("Gmail 발송 결과가 불확실해 중복 방지용 재전송 생략: %s", paper.uid)
+            else:
+                md_file = markdown_path(cfg.resolve(cfg.storage.markdown_dir), paper)
+                try:
+                    message_id = gmail_sender.send_paper(
+                        paper,
+                        md_file,
+                        before_send=lambda: store.mark_email_sending(paper),
+                    )
+                except GmailError as e:
+                    if e.delivery_unknown:
+                        store.mark_email_unknown(paper.uid)
+                        retry_note = "발송 여부가 불확실해 자동 재전송하지 않습니다"
+                    else:
+                        store.mark_email_failed(paper)
+                        retry_note = "다음 수동 실행에서 메일만 재시도합니다"
+                    logger.error(
+                        "Gmail 발송 실패 %s; %s: %s",
+                        paper.uid,
+                        retry_note,
+                        e,
+                    )
+                except Exception as e:  # noqa: BLE001 — 전송 직전/직후 예외는 상태로 구분
+                    if store.email_delivery_status(paper.uid) == "sending":
+                        store.mark_email_unknown(paper.uid)
+                        retry_note = "발송 여부가 불확실해 자동 재전송하지 않습니다"
+                    else:
+                        store.mark_email_failed(paper)
+                        retry_note = "다음 수동 실행에서 메일만 재시도합니다"
+                    logger.exception("Gmail 처리 오류 %s; %s: %s", paper.uid, retry_note, e)
+                else:
+                    store.mark_email_sent(paper.uid, message_id)
         store.mark_done(paper)
         chatdb.store_paper(cfg, paper, extracted, summary)   # 챗봇 캐시에 전문·요약 (실패해도 발행은 끝났으니 경고만)
         return True
@@ -124,6 +172,47 @@ def process_paper(cfg, store, publisher, paper, client) -> bool:
     return False
 
 
+def retry_failed_emails(cfg: Config, store: Store, gmail_sender: GmailSender) -> int:
+    """확실히 발송되지 않은 기존 메일만 재시도한다. 요약과 Markdown은 다시 만들지 않는다."""
+    papers = store.failed_email_papers()
+    if not papers:
+        return 0
+    logger.info("Gmail 재시도 대기 %d편 — 요약 재생성 없이 메일만 처리", len(papers))
+    sent = 0
+    for paper in papers:
+        md_file = markdown_path(cfg.resolve(cfg.storage.markdown_dir), paper)
+        if not Path(md_file).is_file():
+            logger.warning("Gmail 재시도 보류 %s: Markdown 파일을 찾지 못했습니다.", paper.uid)
+            continue
+        try:
+            message_id = gmail_sender.send_paper(
+                paper,
+                md_file,
+                before_send=lambda: store.mark_email_sending(paper),
+            )
+        except GmailError as e:
+            if e.delivery_unknown:
+                store.mark_email_unknown(paper.uid)
+                retry_note = "발송 여부가 불확실해 자동 재전송하지 않습니다"
+            else:
+                store.mark_email_failed(paper)
+                retry_note = "다음 수동 실행에서 메일만 재시도합니다"
+            logger.error("Gmail 재시도 실패 %s; %s: %s", paper.uid, retry_note, e)
+        except Exception as e:  # noqa: BLE001 — 전송 직전/직후 예외는 상태로 구분
+            if store.email_delivery_status(paper.uid) == "sending":
+                store.mark_email_unknown(paper.uid)
+                retry_note = "발송 여부가 불확실해 자동 재전송하지 않습니다"
+            else:
+                store.mark_email_failed(paper)
+                retry_note = "다음 수동 실행에서 메일만 재시도합니다"
+            logger.exception("Gmail 재시도 오류 %s; %s: %s", paper.uid, retry_note, e)
+        else:
+            store.mark_email_sent(paper.uid, message_id)
+            sent += 1
+        store.mark_done(paper)
+    return sent
+
+
 def _select(cfg: Config, store: Store, passed: list[Paper], limit: int | None,
             topics_by_name: dict, replay_items: list = ()) -> list[Paper]:   # [REPLAY] replay_items 인자만 지운다
     """pending 대기열 + 신규 통과분에 쿼터를 적용해 이번 실행 처리분을 고르고, 밀린 신규분은 pending으로.
@@ -135,7 +224,7 @@ def _select(cfg: Config, store: Store, passed: list[Paper], limit: int | None,
     if pending:
         logger.info("pending 대기열 %d편 로드 (오래된 순 우선)", len(pending))
 
-    # topic(채널)×소스별 일일 발행 쿼터 — 대기열 먼저, 남은 자리는 신규 최신순.
+    # topic×소스별 실행당 처리 상한 — 대기열 먼저, 남은 자리는 신규 최신순.
     candidates = pending + passed
     selected = apply_quota(candidates, cfg.quota, topics_by_name)
     selected = _replay.hold_new(selected, list(replay_items))   # [REPLAY] 되올리는 topic의 신규는 보류(아래에서 pending으로)
@@ -156,7 +245,7 @@ def _select(cfg: Config, store: Store, passed: list[Paper], limit: int | None,
 
 
 def run(cfg: Config, opts: RunOptions) -> int:
-    """파이프라인 1회 실행. 종료 코드: 0 정상, 1 전송 설정 오류로 중단, 2 옵션 오류."""
+    """파이프라인 1회 실행. 종료 코드: 0 정상, 1 게시/Gmail 인증 설정 오류, 2 옵션 오류."""
     if opts.topic:
         topics = [t for t in cfg.topics if t.name == opts.topic]
         if not topics:
@@ -170,10 +259,28 @@ def run(cfg: Config, opts: RunOptions) -> int:
     except PublishConfigError as e:
         logger.error("발행 설정 오류: %s", e)
         return 1
-    client = summarizer.make_client(cfg)
+    try:
+        client = summarizer.make_client(cfg)
+    except summarizer.LLMError as e:
+        logger.error("LLM 설정 오류: %s", e)
+        return 2
+    gmail_sender = None
+    if cfg.gmail.enabled and not opts.dry_run:
+        try:
+            gmail_sender = GmailSender(cfg.gmail)
+        except GmailError as e:
+            logger.error("Gmail 설정 또는 인증 오류: %s", e)
+            publisher.close()
+            return 1
+    elif cfg.gmail.enabled and opts.dry_run:
+        logger.info("dry-run 모드: Gmail은 발송하지 않습니다.")
     topics_by_name = {t.name: t for t in cfg.topics}
 
     with Store(cfg.resolve(cfg.storage.db_path)) as store:
+        if gmail_sender is not None:
+            retried = retry_failed_emails(cfg, store, gmail_sender)
+            if retried:
+                logger.info("Gmail 재시도 발송 완료: %d편", retried)
         # store를 fetch에도 넘긴다 — S2 인용순 topic의 기존 논문 스킵 + 페이지 커서용.
         fetched = fetch_all(cfg, backfill=opts.backfill, store=store)
         todo = store.filter_unprocessed(fetched)
@@ -190,7 +297,7 @@ def run(cfg: Config, opts: RunOptions) -> int:
         replay_items = _replay.select(cfg, store, publisher)[: opts.limit]   # [REPLAY] Zulip 되올리기 — 옛 논문 먼저
         selected = _select(cfg, store, passed, opts.limit, topics_by_name, replay_items)   # [REPLAY] 마지막 인자만 지운다
 
-        done = failed = 0
+        done = failed = content_filtered = 0
         config_error: PublishConfigError | None = None
         for i, item in enumerate(replay_items, start=1):   # [REPLAY] 되올리기 블록 — 옛 논문을 다 올리면 통째로 지운다
             logger.info("[되올리기 %d/%d] %s — %.80s", i, len(replay_items), item.uid, item.title)
@@ -207,7 +314,7 @@ def run(cfg: Config, opts: RunOptions) -> int:
                 break          # [REPLAY]
             logger.info("[%d/%d] %s — %.80s", i, len(selected), paper.uid, paper.title)
             try:
-                ok = process_paper(cfg, store, publisher, paper, client)
+                ok = process_paper(cfg, store, publisher, paper, client, gmail_sender=gmail_sender)
             except PublishConfigError as e:
                 config_error = e
                 logger.error(
@@ -215,8 +322,10 @@ def run(cfg: Config, opts: RunOptions) -> int:
                     "failed로 기록하지 않으며, 설정을 고치면 다음 실행 때 처리됩니다.", e,
                 )
                 break
-            if ok:
+            if ok is True:
                 done += 1
+            elif ok is None:
+                content_filtered += 1
             else:
                 failed += 1
 
@@ -224,7 +333,7 @@ def run(cfg: Config, opts: RunOptions) -> int:
     if summarizer.llm_used():  # 이 실행이 LLM(judge/요약)을 실제로 불렀을 때만 — GPU 즉시 반납 (ttl 10분을 기다리지 않음)
         summarizer.unload_model(cfg)
     logger.info(
-        "완료: 검색 %d / 미처리 %d / 필터 통과 %d / 요약 완료 %d / 실패 %d",
-        len(fetched), len(todo), n_passed, done, failed,
+        "완료: 검색 %d / 미처리 %d / 관련성 통과 %d / 요약 완료 %d / 본문 정보 부족 필터 %d / 실패 %d",
+        len(fetched), len(todo), n_passed, done, content_filtered, failed,
     )
     return 1 if config_error else 0

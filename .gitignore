@@ -11,6 +11,12 @@ zuliprc
 data/
 logs/
 
+# Gmail OAuth client credentials and user tokens
+credentials.json
+gmail_credentials.json
+gmail_token.json
+token.json
+
 # Python
 __pycache__/
 *.py[cod]
@@ -18,3 +24,6 @@ __pycache__/
 venv/
 *.egg-info/
 tests/
+
+# macOS
+.DS_Store

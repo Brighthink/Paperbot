@@ -37,6 +37,8 @@ def gpu_free_mib(gpus: str) -> list[int] | None:
 
 def ensure_gpu(cfg: ChatConfig) -> None:
     """모델이 이미 올라가 있으면 통과. 아니면 GPU별 여유 VRAM 확인 — 부족하면 GpuBusy."""
+    if llmserver.is_openai_api(cfg.llm_url):
+        return  # Hosted API requests do not use this machine's GPUs.
     if model_loaded(cfg):
         return
     free = gpu_free_mib(cfg.vram_gpus)

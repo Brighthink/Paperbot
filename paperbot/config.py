@@ -42,8 +42,8 @@ class Topic:
     interest: str                          # relevance 필터의 기준이 되는 자연어 서술
     s2: S2SourceConfig | None = None       # None이면 S2 소스 스킵
     arxiv: ArxivSourceConfig | None = None # None 또는 enabled=False면 arXiv 스킵
-    channel: str | None = None             # 이 topic 전용 Slack 채널. None이면 slack.channel 사용.
-    platform: str = "slack"                # 이 topic의 발행처: "slack" | "zulip"
+    channel: str | None = None             # legacy Slack 설정
+    platform: str = "markdown"             # 결과 저장처: "markdown" | legacy "slack" | "zulip"
     stream: str | None = None              # platform이 zulip일 때 보낼 스트림(예외용). None이면 zulip.stream(공용 스트림)
     zulip_topic: str | None = None         # platform이 zulip일 때 이 주제의 논문을 전부 넣을 고정 Zulip topic. None이면 논문마다 topic(=제목)
     quota_s2: int | None = None            # topic별 쿼터 오버라이드. None이면 quota.s2_per_topic 사용
@@ -63,10 +63,10 @@ class FetchConfig:
 
 @dataclass(frozen=True)
 class QuotaConfig:
-    """실행(=하루)당 topic(채널)별 발행 상한. 0 = 무제한.
+    """paperbot 실행 1회당 topic별 논문 처리 상한. 0 = 무제한.
 
-    필터를 통과한 논문 중 소스별로 상한만큼만 발행한다. 초과분은 DB에 pending으로 적재되어
-    다음 실행에서 오래된 순(FIFO)으로 먼저 쿼터를 채운다.
+    필터를 통과한 논문 중 소스별로 상한만큼만 처리한다. 초과분은 DB에 pending으로 적재되어
+    다음 실행에서 오래된 순(FIFO)으로 먼저 처리한다.
     pending_max_age_days: 이보다 오래 대기한 pending은 폐기(expired). 0 = 무제한.
     """
     s2_per_topic: int = 0
@@ -85,13 +85,30 @@ class FilterConfig:
 
 @dataclass(frozen=True)
 class LLMConfig:
-    base_url: str = "http://localhost:8090/v1"   # llama-swap (OpenAI 호환)
-    model: str = "qwen3.8:27b"            # = llama-swap 모델 ID
-    num_ctx: int = 32768                   # 서버 컨텍스트(llama-swap config의 llama-server -c)와 같게 — 첫 호출 뒤 /props로 확인
+    base_url: str = "https://api.openai.com/v1"   # OpenAI API (or a local OpenAI-compatible endpoint)
+    model: str = "gpt-6-luna"
+    num_ctx: int = 32768                   # 로컬 서버 컨텍스트 예산. 호스팅 API 입력은 max_input_chars로 제한
     max_input_chars: int = 30000
     max_output_tokens: int = 8192          # 요약 출력 상한 (thinking 토큰 포함 — 폭주 방지)
     temperature: float = 0.3
     language: str = "ko"
+
+
+@dataclass(frozen=True)
+class MarkdownConfig:
+    """Markdown 출력에 함께 저장할 그림·표 추출 상한."""
+    max_figures: int = 3
+    max_tables: int = 3
+
+
+@dataclass(frozen=True)
+class GmailConfig:
+    """논문별 Markdown 메일 발송. OAuth 토큰은 저장소 밖에 둔다."""
+    enabled: bool = False
+    to: str = ""
+    credentials_file: str = "~/.config/paperbot/gmail_credentials.json"
+    token_file: str = "~/.config/paperbot/gmail_token.json"
+    subject_prefix: str = "[Paperbot]"
 
 
 @dataclass(frozen=True)
@@ -124,6 +141,7 @@ class ZulipConfig:
 class StorageConfig:
     db_path: str = "./data/papers.db"
     pdf_dir: str = "./data/pdfs"
+    markdown_dir: str = "./data/markdown"
     keep_pdfs: bool = False
     chat_text_db: str = ""       # zoterobot 본문 캐시(library_text.db) 경로 — 비면 끔. 요약한 논문의 전문·요약을 넣어 DM 챗봇이 찾게 한다
 
@@ -139,9 +157,11 @@ class Config:
     storage: StorageConfig
     zulip: ZulipConfig = field(default_factory=ZulipConfig)
     base_dir: str = field(default=".")     # config.yaml 위치 — 상대 경로 기준점
+    markdown: MarkdownConfig = field(default_factory=MarkdownConfig)
+    gmail: GmailConfig = field(default_factory=GmailConfig)
 
     def platforms(self) -> list[str]:
-        """topic들이 쓰는 발행처 집합 (설정 순서 유지). 예: ["slack"], ["slack", "zulip"]."""
+        """topic들이 쓰는 저장처 집합 (설정 순서 유지). 기본 저장처는 Markdown."""
         out: list[str] = []
         for t in self.topics:
             if t.platform not in out:
@@ -149,11 +169,15 @@ class Config:
         return out
 
     def platform_for(self, topic_name: str) -> str:
-        return next((t.platform for t in self.topics if t.name == topic_name), "slack")
+        return next((t.platform for t in self.topics if t.name == topic_name), "markdown")
 
     def figures_for(self, topic_name: str) -> tuple[bool, int, int]:
-        """topic의 발행처 기준 (figure 첨부 여부, 최대 figure 수, 최대 표 수). 모르는 topic은 Slack 설정."""
-        if self.platform_for(topic_name) == "zulip":
+        """발행처에 맞는 figure·표 추출 설정."""
+        platform = self.platform_for(topic_name)
+        if platform == "markdown":
+            enabled = self.markdown.max_figures > 0 or self.markdown.max_tables > 0
+            return enabled, self.markdown.max_figures, self.markdown.max_tables
+        if platform == "zulip":
             return self.zulip.attach_figure, self.zulip.max_figures, self.zulip.max_tables
         return self.slack.attach_figure, self.slack.max_figures, self.slack.max_tables
 
@@ -229,9 +253,9 @@ def _parse_topic(i: int, raw: Any) -> Topic:
     channel = t.get("channel")
     channel = str(channel).strip() if channel else None
 
-    platform = str(t.get("platform", "slack") or "slack").strip().lower()
-    if platform not in ("slack", "zulip"):
-        raise ConfigError(f"{ctx}.platform은 'slack' 또는 'zulip'이어야 합니다: {platform}")
+    platform = str(t.get("platform", "markdown") or "markdown").strip().lower()
+    if platform not in ("markdown", "slack", "zulip"):
+        raise ConfigError(f"{ctx}.platform은 'markdown', 'slack' 또는 'zulip'이어야 합니다: {platform}")
     stream = t.get("stream")
     stream = str(stream).strip().lstrip("#") if stream else None
     zulip_topic = t.get("zulip_topic")
@@ -347,6 +371,35 @@ def load_config(path: str) -> Config:
             "너무 큽니다 — 프롬프트가 조용히 잘릴 수 있습니다."
         )
 
+    # --- markdown ---
+    markdown_d = _as_dict(raw.get("markdown"), "markdown")
+    markdown = MarkdownConfig(
+        max_figures=int(markdown_d.get("max_figures", 3)),
+        max_tables=int(markdown_d.get("max_tables", 3)),
+    )
+    if markdown.max_figures < 0 or markdown.max_tables < 0:
+        raise ConfigError("markdown.max_figures / max_tables는 0 이상이어야 합니다.")
+
+    # --- Gmail ---
+    gmail_d = _as_dict(raw.get("gmail"), "gmail")
+    def gmail_path(key: str, default: str) -> str:
+        value = os.path.expanduser(str(gmail_d.get(key, default)).strip())
+        return value if os.path.isabs(value) else os.path.normpath(os.path.join(base_dir, value))
+
+    gmail = GmailConfig(
+        enabled=bool(gmail_d.get("enabled", False)),
+        to=str(gmail_d.get("to", "") or "").strip(),
+        credentials_file=gmail_path("credentials_file", "~/.config/paperbot/gmail_credentials.json"),
+        token_file=gmail_path("token_file", "~/.config/paperbot/gmail_token.json"),
+        subject_prefix=str(gmail_d.get("subject_prefix", "[Paperbot]") or "").strip(),
+    )
+    if gmail.enabled and not gmail.to:
+        raise ConfigError("gmail.enabled가 true이면 gmail.to 수신 주소가 필요합니다.")
+    if gmail.enabled and any(t.platform != "markdown" for t in topics):
+        raise ConfigError("Gmail 발송은 Markdown 파일·그림을 본문으로 사용하므로 모든 topic.platform이 'markdown'이어야 합니다.")
+    if not gmail.credentials_file or not gmail.token_file:
+        raise ConfigError("gmail.credentials_file과 gmail.token_file 경로를 비울 수 없습니다.")
+
     # --- slack / storage ---
     slack_d = _as_dict(raw.get("slack"), "slack")
     slack = SlackConfig(
@@ -383,11 +436,13 @@ def load_config(path: str) -> Config:
     storage = StorageConfig(
         db_path=str(storage_d.get("db_path", "./data/papers.db")),
         pdf_dir=str(storage_d.get("pdf_dir", "./data/pdfs")),
+        markdown_dir=str(storage_d.get("markdown_dir", "./data/markdown")),
         keep_pdfs=bool(storage_d.get("keep_pdfs", False)),
         chat_text_db=str(storage_d.get("chat_text_db", "") or ""),
     )
 
     return Config(
         topics=topics, fetch=fetch, quota=quota, filter=flt, llm=llm,
-        slack=slack, storage=storage, zulip=zulip, base_dir=base_dir,
+        slack=slack, storage=storage, markdown=markdown, zulip=zulip, base_dir=base_dir,
+        gmail=gmail,
     )

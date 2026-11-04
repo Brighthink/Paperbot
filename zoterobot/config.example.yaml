@@ -26,14 +26,14 @@ library:                      # thread command '@zoterobot <collection>' → Zot
                               # 파일명 접속어 — Zotero UI 언어에 맞춤
   unpaywall_email: ""         # Unpaywall lookup email for PDFs the publisher blocks (empty = off) / Unpaywall 조회용 이메일
 
-chat:                         # DM chat agent — qwen picks tools (search / read / list); no embedding model / DM 챗봇
+chat:                         # DM chat agent — GPT-6 Luna picks tools (search / read / list); no embedding model / DM 챗봇
   enabled: true
-  llm_url: "http://localhost:8090"    # llama-swap (OpenAI-compatible /v1, tools + streaming) / llama-swap 주소
-  model: "qwen3.8:27b"        # same as paperbot's llm.model (= llama-swap model id), or every full-text summary swaps models / paperbot과 같은 모델로
+  llm_url: "https://api.openai.com"   # OpenAI API base (agent adds /v1/chat/completions)
+  model: "gpt-6-luna"        # same hosted model as paperbot
   temperature: 0.5
-  max_output_tokens: 8192     # answer length cap (at ~45 tok/s a full answer takes ~3 min) / 답변 길이 상한
+  max_output_tokens: 8192     # answer length cap / 답변 길이 상한
   max_tool_steps: 5           # tool-call rounds per question / 질문당 도구 호출 라운드 상한
-  ctx_tokens: 65536           # server context (= llama-server -c); verified via /props after the first reply / 서버 컨텍스트
+  ctx_tokens: 65536           # local tool-context budget; hosted API supports a larger context / 도구 입력 예산
   output_reserve_tokens: 3072 # tokens kept aside for the answer when sizing tool text (cap is max_output_tokens) / 답변용 예약
   safety_tokens: 1024         # fixed slack; unmeasured text also gets +10% / 고정 여유 (+미측정분 10%)
   history_max_tokens: 8000    # drop oldest Q/A pairs beyond this / 대화 기억 상한(토큰)
@@ -42,8 +42,8 @@ chat:                         # DM chat agent — qwen picks tools (search / rea
   paperbot_config: "../config.yaml"   # paperbot config used by the summarizer (llm.max_input_chars, prompts) / 요약기가 쓸 paperbot 설정
   summaries_per_question: 2   # new full-text summaries per question (2–3 min each); stored ones are free / 질문당 새 요약 수
   history_turns: 4            # Q/A pairs remembered per DM; "새 대화" resets / DM별 기억할 질문·답 쌍 ('새 대화'로 초기화)
-  vram_gpus: "1,2"            # GPUs the model loads on; below vram_min_mib free → "busy" reply / 모델이 올라갈 GPU
-  vram_min_mib: 13312         # 13 GB per GPU / 장당 최소 여유 VRAM
+  vram_gpus: "1,2"            # used only with a local GPU model / 로컬 GPU 모델에서만 사용
+  vram_min_mib: 13312         # local model only / 로컬 모델 전용
   catalog_max: 0              # 0 = never put the paper list in the prompt (the model always searches); N = include it up to N papers / 0이면 목록 없이 항상 검색
   text_db: "./data/library_text.db"   # full-text cache (sqlite); relative to this file / 본문 캐시 (이 파일 기준 상대경로)
   chatlog_dir: "./data/chatlog"       # one JSONL per day / 날짜별 jsonl 대화 로그

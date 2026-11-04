@@ -70,7 +70,7 @@ class Paper:
     venue: str | None         # arXiv 프리프린트면 None
     year: int | None
     url: str                  # 사람이 여는 링크 (abs 페이지 / doi.org / S2 페이지)
-    pdf_url: str | None       # 없으면 abstract 기반 요약으로 폴백
+    pdf_url: str | None       # 없거나 다운로드·판독 실패 시 abstract, abstract도 없으면 메타데이터 안내로 폴백
     arxiv_id: str | None      # base id (버전 제거)
     doi: str | None
     citation_count: int | None
@@ -82,6 +82,7 @@ class Paper:
     @property
     def embed_text(self) -> str:
         """relevance 임베딩에 쓰는 텍스트 (abstract 없으면 title만)."""
-        if self.abstract:
-            return f"{self.title}\n\n{self.abstract}"
+        abstract = (self.abstract or "").strip()
+        if abstract:
+            return f"{self.title}\n\n{abstract}"
         return self.title

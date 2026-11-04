@@ -1,0 +1,1 @@
+Openai_API_key = '[moved to ~/.paperbot_env]'

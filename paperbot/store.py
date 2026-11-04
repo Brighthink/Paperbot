@@ -5,12 +5,15 @@ s2_cursor 테이블: S2 인용순 topic의 페이지 커서(bulk 검색 continua
   다음 실행은 이미 소진한 페이지를 다시 요청하지 않는다. 쿼리 파라미터가 바뀌면 리셋.
 
 status 값:
-  done              요약·포스팅 완료 → 재처리 안 함
+  done              요약·결과 파일 저장 완료 → 재처리 안 함
   filtered_out      relevance 필터 탈락 → 재채점하지 않도록 기록
   pending           필터는 통과했지만 발행 쿼터에 밀림 → 대기열(FIFO). payload에 Paper 전체 보존.
   expired           pending이 pending_max_age_days를 넘겨 폐기됨
   failed            1회 실패 → 다음 실행 때 재시도 대상
   failed_permanent  재시도도 실패 → 영구 skip
+
+Gmail 발송 상태는 email_delivery 테이블에 별도로 저장한다. 응답 전 중단이나 네트워크 오류 뒤에는
+발송 여부를 알 수 없으므로 같은 논문을 자동 재전송하지 않는다.
 
 should_process()는 (미등록) 또는 (status == 'failed')일 때만 True.
 pending은 검색 결과에 다시 나타나도 재채점하지 않고, 대기열 경로(load_pending)로만 처리된다.
@@ -47,6 +50,13 @@ CREATE TABLE IF NOT EXISTS s2_cursor (
     pages_done   INTEGER NOT NULL DEFAULT 0,
     updated_at   TEXT
 );
+CREATE TABLE IF NOT EXISTS email_delivery (
+    uid          TEXT PRIMARY KEY,
+    status       TEXT NOT NULL,
+    message_id   TEXT,
+    payload      TEXT,
+    updated_at   TEXT NOT NULL
+);
 """
 
 
@@ -64,11 +74,14 @@ class Store:
         self.conn.commit()
 
     def _migrate(self) -> None:
-        """기존 DB(payload 컬럼 없음)에 컬럼 추가 — 데이터 손실 없는 additive 마이그레이션."""
+        """기존 DB에 필요한 payload 컬럼을 추가한다 — 데이터 손실 없는 additive 마이그레이션."""
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(papers)")}
         if "payload" not in cols:
             self.conn.execute("ALTER TABLE papers ADD COLUMN payload TEXT")
             logger.info("DB 마이그레이션: papers.payload 컬럼 추가 (pending 대기열용)")
+        email_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(email_delivery)")}
+        if "payload" not in email_cols:
+            self.conn.execute("ALTER TABLE email_delivery ADD COLUMN payload TEXT")
 
     def done_papers(self, topic: str) -> list[sqlite3.Row]:
         """topic의 done 논문 전부(오래된 순) — uid·title·source·judge_score. Zulip 되올리기 입력."""
@@ -133,6 +146,66 @@ class Store:
         self._upsert(paper, new_status, error)
         if new_status == "failed_permanent":
             logger.warning("영구 skip 처리: %s (재시도도 실패)", paper.uid)
+
+    # --- Gmail delivery state ---
+    def email_delivery_status(self, uid: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT status FROM email_delivery WHERE uid = ?", (uid,)
+        ).fetchone()
+        return row["status"] if row else None
+
+    def _set_email_delivery(
+        self,
+        uid: str,
+        status: str,
+        message_id: str | None = None,
+        payload: str | None = None,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO email_delivery (uid, status, message_id, payload, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(uid) DO UPDATE SET
+                status = excluded.status,
+                message_id = excluded.message_id,
+                payload = COALESCE(excluded.payload, email_delivery.payload),
+                updated_at = excluded.updated_at
+            """,
+            (uid, status, message_id, payload, _now()),
+        )
+        self.conn.commit()
+
+    def mark_email_sending(self, paper: Paper) -> None:
+        """발송 직전에 기록해, 프로세스 중단 뒤의 중복 전송을 막는다."""
+        payload = json.dumps(dataclasses.asdict(paper), ensure_ascii=False)
+        self._set_email_delivery(paper.uid, "sending", payload=payload)
+
+    def mark_email_sent(self, uid: str, message_id: str) -> None:
+        self._set_email_delivery(uid, "sent", message_id or None)
+
+    def mark_email_failed(self, paper: Paper) -> None:
+        """확실히 발송되지 않은 메일을 다음 실행에서 재시도할 수 있게 기록한다."""
+        payload = json.dumps(dataclasses.asdict(paper), ensure_ascii=False)
+        self._set_email_delivery(paper.uid, "failed", payload=payload)
+
+    def mark_email_unknown(self, uid: str) -> None:
+        """응답 유실 등 수락 여부가 불명확한 시도는 중복 방지를 위해 자동 재전송하지 않는다."""
+        self._set_email_delivery(uid, "unknown")
+
+    def failed_email_papers(self) -> list[Paper]:
+        """확실히 발송되지 않은 메일의 Paper 메타데이터를 오래된 순으로 반환한다."""
+        rows = self.conn.execute(
+            "SELECT uid, payload FROM email_delivery WHERE status='failed' ORDER BY updated_at ASC"
+        ).fetchall()
+        papers: list[Paper] = []
+        for row in rows:
+            try:
+                if not row["payload"]:
+                    raise ValueError("메일 재시도용 Paper 정보 없음")
+                papers.append(Paper(**json.loads(row["payload"])))
+            except (TypeError, ValueError) as e:
+                logger.warning("Gmail 재시도 정보 복원 실패 — 건너뜀: %s (%s)", row["uid"], e)
+        return papers
 
     # --- pending 대기열 (쿼터 초과분, FIFO) ---
     def mark_pending(self, paper: Paper) -> bool:

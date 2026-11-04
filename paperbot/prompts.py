@@ -35,7 +35,7 @@ SUMMARY_SYSTEM_PROMPT = """\
 {skeleton}
 """
 
-# 수식 표기 — 발행처별. Slack은 LaTeX를 렌더링하지 못하므로 평문, Zulip은 $$…$$(인라인)과 ```math 블록을 렌더링한다.
+# 수식 표기 — Markdown/Slack은 평문, Zulip은 $$…$$(인라인)과 ```math 블록을 사용한다.
 MATH_RULES = {
     "plain": "- 수식은 평문으로 적는다(예: O(n^2), x_i). LaTeX 명령은 쓰지 마라.\n",
     "latex": ("- 수식은 LaTeX로 적는다: 인라인 수식은 $$...$$ 로 감싸되 **$$ 앞뒤에 반드시 공백을 하나씩 둔다** "
@@ -47,6 +47,7 @@ MATH_RULES = {
 def _skeleton() -> str:
     lines: list[str] = []
     for i, (title, guide) in enumerate(SECTIONS, start=1):
+        lines.append("")
         lines.append(f"### {i}. {title}")
         lines.append(f"({guide})")
         lines.append("")
@@ -54,7 +55,7 @@ def _skeleton() -> str:
 
 
 def build_summary_system_prompt(language: str, math: str = "plain") -> str:
-    """math: "plain"(Slack) | "latex"(Zulip — $$…$$ 인라인, ```math 블록)."""
+    """math: "plain"(Markdown/Slack) | "latex"(Zulip — $$…$$ 인라인, ```math 블록)."""
     return SUMMARY_SYSTEM_PROMPT.format(language=language, skeleton=_skeleton(), math_rule=MATH_RULES[math])
 
 
@@ -103,7 +104,7 @@ JUDGE_SYSTEM_PROMPT = """\
 
 
 def build_judge_user_prompt(interest: str, paper: Paper) -> str:
-    abstract = paper.abstract or "(abstract 없음 — 제목만으로 판단)"
+    abstract = (paper.abstract or "").strip() or "(abstract 없음 — 제목만으로 판단)"
     venue = paper.venue or "arXiv preprint"
     return f"""\
 # 연구자의 관심사

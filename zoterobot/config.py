@@ -31,11 +31,11 @@ class LibraryConfig:
 
 @dataclass(frozen=True)
 class ChatConfig:
-    """DM 챗봇 — qwen이 질문 유형(search·question·comparing)을 판단해 도구를 골라 쓰는 에이전트. 임베딩 모델 없음."""
+    """DM 챗봇 — 설정한 모델이 질문 유형을 판단해 도구를 골라 쓰는 에이전트. 임베딩 모델 없음."""
     enabled: bool = True
-    llm_url: str = "http://localhost:8090"    # llama-swap 주소(/v1 없이) — OpenAI 호환 /v1/chat/completions(tools·스트리밍) 호출.
+    llm_url: str = "https://api.openai.com"   # OpenAI API base (without /v1)
                                               # 모델 유지 시간(ttl 10분)은 ~/llama-swap/config.yaml에서 정한다
-    model: str = "qwen3.8:27b"                # paperbot llm.model과 같게 = llama-swap 모델 ID — 다르면 모델을 바꿔 올리느라 매번 내렸다 올린다
+    model: str = "gpt-6-luna"                 # same model as paperbot; use the configured endpoint
     temperature: float = 0.5
     max_output_tokens: int = 2048
     max_tool_steps: int = 5                   # 한 질문에 허용할 도구 호출 라운드
@@ -48,7 +48,7 @@ class ChatConfig:
     paperbot_config: str = "../config.yaml"   # 요약기가 쓸 paperbot config.yaml (llm.max_input_chars·프롬프트·모델)
     summaries_per_question: int = 2           # 질문 하나에서 새로 만들 전문 요약 수(편당 2~3분) — 저장된 요약은 안 셈
     history_turns: int = 4                    # DM별로 기억할 최근 질문·답 쌍 수
-    vram_gpus: str = "1,2"                    # 모델이 올라갈 GPU (llama-swap config의 CUDA_VISIBLE_DEVICES와 같게)
+    vram_gpus: str = "1,2"                    # only used with a local GPU model
     vram_min_mib: int = 13312                 # 장당 최소 여유 — 모델이 이미 올라가 있으면 체크 생략
     catalog_max: int = 0                      # 0이면 목록을 프롬프트에 넣지 않고 항상 search_papers로 찾는다; N이면 N편 이하일 때 전체 목록 포함
     text_db: str = "./data/library_text.db"   # 라이브러리 본문 텍스트 캐시 (sqlite)

@@ -86,14 +86,14 @@ images:
   max_upload_bytes: 8000000      # 초과 시 JPEG 재인코딩 / 애니메이션 GIF는 첫 프레임
   max_side: 2400                 # 긴 변 축소 기준
 
-llm:                             # paperbot과 같은 LLM 서버·모델 (llama-swap → llama-server CUDA)
-  base_url: "http://localhost:8090/v1"
-  model: "qwen3.8:27b"
+llm:                             # same provider/model as paperbot; default is OpenAI API
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-6-luna"
   max_input_chars: 60000         # 블로그 본문은 보통 5k~20k자
   max_output_tokens: 4096
   temperature: 0.3
   language: "ko"
-  unload_after_run: true         # 끝나면 모델 언로드 (VRAM 즉시 반납)
+  unload_after_run: true         # local llama-swap only; hosted API has nothing to unload
   peer_lockfiles:                # 이 봇들이 실행 중이면 언로드하지 않음 (같은 모델 공유)
     - "../data/.lock"            # paperbot (lockfile next to its storage.db_path) — 상대 경로는 이 파일 기준
 

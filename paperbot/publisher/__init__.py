@@ -1,5 +1,5 @@
-"""Publishing: Slack (channel message + thread) or Zulip (stream topic), chosen per topic.
-발행 패키지 — topic별 platform 설정에 따라 Slack 또는 Zulip으로 보낸다.
+"""Publish per topic to Markdown, Slack, or Zulip.
+저장·발행 패키지 — 현재 기본 설정은 논문별 Markdown 저장이다.
 
 - slack.SlackPublisher / zulip.ZulipPublisher: 실제 전송. dryrun.DryRunPublisher: stdout 미리보기.
 - MultiPublisher: topic.platform에 따라 라우팅 (두 발행처를 함께 쓸 때만). make_publisher()가 조립한다.
@@ -14,6 +14,7 @@ from ..figures import Figure
 from ..models import Paper
 from .base import PublishConfigError, Publisher, extract_one_liner
 from .dryrun import DryRunPublisher
+from .markdown import MarkdownPublisher
 from .slack import SlackPublisher, _topic_channel_map, format_slack_main, md_to_mrkdwn
 from .zulip import (ZulipPublisher, _topic_stream_map, _zulip_topic_map, build_zulip_messages, format_zulip_main,
                     make_zulip_client, split_zulip_message, zulip_auth_error, zulip_math_spacing, zulip_topic_for,
@@ -22,7 +23,7 @@ from .zulip import (ZulipPublisher, _topic_stream_map, _zulip_topic_map, build_z
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "Publisher", "PublishConfigError", "DryRunPublisher", "SlackPublisher", "ZulipPublisher", "MultiPublisher", "make_publisher",
+    "Publisher", "PublishConfigError", "DryRunPublisher", "MarkdownPublisher", "SlackPublisher", "ZulipPublisher", "MultiPublisher", "make_publisher",
     "extract_one_liner", "md_to_mrkdwn", "format_slack_main",
     "zulip_topic_name", "zulip_topic_for", "format_zulip_main", "build_zulip_messages", "split_zulip_message",
     "zulip_math_spacing", "make_zulip_client", "zulip_auth_error",
@@ -32,7 +33,7 @@ __all__ = [
 class MultiPublisher(Publisher):
     """topic.platform에 따라 Slack/Zulip publisher로 라우팅 (두 발행처를 함께 쓸 때)."""
 
-    def __init__(self, by_platform: dict[str, Publisher], topic_platform: dict[str, str], default: str = "slack"):
+    def __init__(self, by_platform: dict[str, Publisher], topic_platform: dict[str, str], default: str = "markdown"):
         self.by_platform = by_platform
         self.topic_platform = topic_platform
         self.default = default
@@ -50,6 +51,10 @@ class MultiPublisher(Publisher):
 
 
 def _build_publisher(cfg: Config, platform: str, force_dry_run: bool) -> Publisher:
+    if platform == "markdown":
+        if force_dry_run:
+            logger.info("dry-run 모드: Markdown 파일 대신 stdout 출력")
+        return MarkdownPublisher(cfg.resolve(cfg.storage.markdown_dir), dry_run=force_dry_run)
     if platform == "zulip":
         if cfg.zulip.dry_run or force_dry_run:
             logger.info("dry-run 모드: Zulip 전송 대신 stdout 출력")
@@ -63,9 +68,8 @@ def _build_publisher(cfg: Config, platform: str, force_dry_run: bool) -> Publish
 
 
 def make_publisher(cfg: Config, force_dry_run: bool = False) -> Publisher:
-    """topic들이 쓰는 발행처(slack/zulip)별로 publisher를 만들고, 둘 다 쓰면 MultiPublisher로 묶는다.
-    각 발행처는 자기 dry_run(slack.dry_run / zulip.dry_run) 또는 --dry-run이면 stdout 출력."""
-    platforms = cfg.platforms() or ["slack"]
+    """topic들이 쓰는 저장처별 publisher를 만들고, 둘 이상이면 MultiPublisher로 묶는다."""
+    platforms = cfg.platforms() or ["markdown"]
     built = {p: _build_publisher(cfg, p, force_dry_run) for p in platforms}
     if len(built) == 1:
         return next(iter(built.values()))

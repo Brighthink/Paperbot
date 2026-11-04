@@ -49,7 +49,8 @@ def _format_meta(paper: Paper, abstract_only: bool, italic: str = "_") -> str:
     meta_parts.append(f"`#{paper.topic_name}`")
     meta = " · ".join(meta_parts)
     if abstract_only:
-        meta += f" · {italic}(abstract 기반 요약){italic}"
+        note = "초록 기반 요약" if (paper.abstract or "").strip() else "원문·초록 미확보 안내"
+        meta += f" · {italic}({note}){italic}"
     return meta
 
 

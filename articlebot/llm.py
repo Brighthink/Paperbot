@@ -1,16 +1,13 @@
 """LLM 호출 — 요약 / relevance judge / 대표 그림 선택.
 
-paperbot과 같은 LLM 서버·모델(qwen3.8:27b)을 OpenAI 호환 엔드포인트(/v1)로 호출한다.
-서버는 llama-swap(127.0.0.1:8090) — 요청이 오면 llama-server(llama.cpp CUDA)를 띄우고 ttl 10분 뒤 내린다
-(설정 ~/llama-swap/config.yaml).
-- thinking은 chat_template_kwargs enable_thinking=false로 끈다 (서버 기본값도 끔).
-- JSON 출력은 OpenAI 호환 response_format(json_schema)으로 서버가 강제한다(grammar).
-- 컨텍스트 길이는 서버 실행 옵션(llama-server -c, 64K)으로 정해진다 — 본문 상한(llm.max_input_chars)이 그 안에 들어가게 둘 것.
+Uses the configured OpenAI-compatible endpoint. GPT-6 Luna is called through the OpenAI API;
+local llama-swap remains supported for users who choose it.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 
@@ -67,7 +64,11 @@ class LLMError(Exception):
 
 
 def make_client(cfg: Config) -> OpenAI:
-    # llama-swap은 API 키를 검증하지 않지만(apiKeys 미설정) openai 클라이언트는 값이 필요하다.
+    if llmserver.is_openai_api(cfg.llm.base_url):
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            raise LLMError("GPT-6 Luna API를 쓰려면 ~/.paperbot_env에 OPENAI_API_KEY를 설정하세요.")
+        return OpenAI(base_url=cfg.llm.base_url, api_key=api_key, timeout=600.0)
     return OpenAI(base_url=cfg.llm.base_url, api_key="none", timeout=600.0)
 
 
@@ -84,12 +85,18 @@ def chat(client: OpenAI, cfg: Config, messages: list[dict], *, temperature: floa
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             kwargs = {"response_format": response_format} if response_format else {}
+            hosted_api = llmserver.is_openai_api(cfg.llm.base_url)
+            kwargs["max_completion_tokens" if hosted_api else "max_tokens"] = (
+                cfg.llm.max_output_tokens if max_tokens is None else max_tokens
+            )
+            if hosted_api:
+                kwargs["reasoning_effort"] = "none"
+            else:
+                kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
             resp = client.chat.completions.create(
                 model=cfg.llm.model,
                 messages=messages,
                 temperature=cfg.llm.temperature if temperature is None else temperature,
-                max_tokens=cfg.llm.max_output_tokens if max_tokens is None else max_tokens,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 **kwargs,
             )
             content = _clean_output(resp.choices[0].message.content)

@@ -1,18 +1,16 @@
 """LLM 호출 공용 헬퍼 + 논문 요약.
 
-llama-swap(로컬 프록시, 기본 127.0.0.1:8090)의 OpenAI 호환 엔드포인트(/v1)를 openai 패키지로 호출한다.
-llama-swap이 요청 시 llama-server(llama.cpp CUDA)를 띄운다 (관리 헬퍼: llmserver.py).
+OpenAI Chat Completions API or a local OpenAI-compatible endpoint is called with the openai package.
 
-num_ctx — 중요:
-컨텍스트 길이는 요청이 아니라 서버 실행 옵션(~/llama-swap/config.yaml의 llama-server -c)으로 정해진다.
-첫 호출 성공 직후 llama-server /props로 실제 컨텍스트를 확인해
-config보다 작으면 경고를 남긴다 (논문이 조용히 잘리는 것 방지).
+num_ctx is checked against the server when using a local endpoint. Hosted API requests use the
+configured max_input_chars input budget instead.
 
 judge(filter.py)와 요약이 이 모듈의 make_client/chat을 공유한다.
 """
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 
@@ -37,7 +35,12 @@ class LLMError(Exception):
 
 
 def make_client(cfg: Config) -> OpenAI:
-    # llama-swap은 API 키를 검증하지 않지만(apiKeys 미설정) openai 클라이언트는 값이 필요하다.
+    if llmserver.is_openai_api(cfg.llm.base_url):
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            raise LLMError("GPT-6 Luna API를 쓰려면 ~/.paperbot_env에 OPENAI_API_KEY를 설정하세요.")
+        return OpenAI(base_url=cfg.llm.base_url, api_key=api_key, timeout=600.0)
+    # llama-swap은 API 키 검증을 끄는 구성이므로 SDK에 더미 값을 넘긴다.
     return OpenAI(base_url=cfg.llm.base_url, api_key="none", timeout=600.0)
 
 
@@ -57,6 +60,8 @@ def _verify_num_ctx_once(cfg: Config) -> None:
     if _ctx_verified:
         return
     _ctx_verified = True
+    if llmserver.is_openai_api(cfg.llm.base_url):
+        return  # Hosted API context is not discoverable through llama-server /props.
     actual = llmserver.server_ctx(llmserver.origin(cfg.llm.base_url), cfg.llm.model)
     if actual is None:
         logger.debug("서버 컨텍스트 확인 불가(무시)")
@@ -83,10 +88,8 @@ def chat(
     """지수 백오프 재시도(3회)를 포함한 chat completion. 실패 시 LLMError.
 
     max_tokens 미지정 시 config의 max_output_tokens 사용 — 폭주 생성 방지.
-    thinking은 항상 끈다(chat_template_kwargs enable_thinking=false — Qwen 채팅 템플릿 옵션, 서버 기본값도 끔)
-    — 요약·judge 모두 답이 입력에 있어 추론 이득이 거의 없고, thinking이 max_tokens를 잡아먹어
-    빈 응답이 나는 사고를 막는다.
-    response_format은 OpenAI 호환 json_schema — llama-server가 문법(grammar)으로 출력 형식을 강제한다.
+    GPT-6 Luna uses reasoning_effort=none; local llama.cpp uses chat_template_kwargs to disable thinking.
+    response_format uses the OpenAI-compatible json_schema format.
     """
     global _llm_used
     _llm_used = True
@@ -96,12 +99,19 @@ def chat(
             kwargs = {}
             if response_format is not None:
                 kwargs["response_format"] = response_format
+            hosted_api = llmserver.is_openai_api(cfg.llm.base_url)
+            kwargs["max_completion_tokens" if hosted_api else "max_tokens"] = (
+                cfg.llm.max_output_tokens if max_tokens is None else max_tokens
+            )
+            if hosted_api:
+                # GPT-6 Luna's Chat Completions function-call compatibility requires effort=none.
+                kwargs["reasoning_effort"] = "none"
+            else:
+                kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
             resp = client.chat.completions.create(
                 model=cfg.llm.model,
                 messages=messages,
                 temperature=cfg.llm.temperature if temperature is None else temperature,
-                max_tokens=cfg.llm.max_output_tokens if max_tokens is None else max_tokens,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 **kwargs,
             )
             content = _clean_output(resp.choices[0].message.content)
@@ -119,15 +129,15 @@ def chat(
 
 
 def llm_used() -> bool:
-    """이 프로세스에서 chat()(judge·요약)을 부른 적이 있나 — 없으면 모델을 올린 적도 없으니 언로드할 이유가 없다."""
+    """이 프로세스에서 chat()(judge·요약)을 호출했는지 반환한다 — 호출하지 않았으면 정리할 모델도 없다."""
     return _llm_used
 
 
 def unload_model(cfg: Config) -> bool:
-    """실행 종료 시 모델을 내려 VRAM을 반납 — llama-swap ttl(10분)을 기다리지 않는다.
+    """로컬 endpoint를 쓰는 경우 실행 종료 시 모델을 내려 VRAM을 반납한다.
 
-    다른 봇(zoterobot DM 등)의 요청이 처리 중이면 끝날 때까지 기다렸다가 내린다(최대 10분, llmserver.unload).
-    실패해도 치명적이지 않음 — ttl이 지나면 어차피 내려간다.
+    호스팅 API에서는 아무 작업도 하지 않는다. 로컬 endpoint의 다른 요청이 진행 중이면 기다린 뒤 내리며,
+    실패해도 치명적이지 않다 — 서버 ttl이 지나면 모델이 내려간다.
     """
     return llmserver.unload(llmserver.origin(cfg.llm.base_url), cfg.llm.model)
 

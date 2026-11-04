@@ -4,12 +4,19 @@
   topic의 interest 문단과 논문의 title+abstract를 임베딩해 cosine similarity가
   embedding_threshold 미만이면 컷. 모델은 프로세스당 1회만 로드(CPU 기본).
   abstract가 없는 논문은 title만으로 점수를 내되 하드컷하지 않고 judge로 넘긴다
-  (title-only 유사도는 체계적으로 낮게 나와 같은 threshold로 자르면 과잉 컷).
+  (title-only 유사도는 체계적으로 낮게 나와 같은 threshold로 자르면 과잉 컷). 따라서 제목이 주제와
+  매우 비슷하면 본문 정보가 없는 논문도 relevance 판정을 통과할 수 있다. 이는 주제 적합성 판정이며,
+  원문 확보 여부는 처리 단계에서 별도로 검사한다.
 
 2단계 — LLM judge (llm_judge: true일 때):
-  임베딩 통과분을 로컬 LLM(llama-swap)으로 0~10 채점. JSON 파싱 실패 시 1회 재요청,
+  임베딩 통과분을 설정된 OpenAI 호환 LLM(GPT-6 Luna 기본값)으로 0~10 채점. JSON 파싱 실패 시 1회 재요청,
   그래도 실패하면 보수적으로 통과(놓치는 것보다 나음).
   judge_threshold 미만이면 filtered_out으로 기록해 재채점을 방지.
+
+본문 정보 필터:
+  처리 단계에서 PDF 본문 추출을 시도한 뒤, usable 본문도 abstract도 없으면 요약·저장·메일 발송 전에
+  filtered_out으로 기록한다. PDF를 내려받을 수 있는지 relevance 판정 단계에서는 아직 알 수 없으므로,
+  제목만 있는 논문을 여기서 미리 제외하지 않는다.
 """
 from __future__ import annotations
 
@@ -29,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 _JSON_RE = re.compile(r"\{.*?\}", re.DOTALL)
 
-# judge 출력 스키마 — 서버(llama-server의 json_schema→grammar)가 이 형식을 강제하므로 파싱 실패가 구조적으로 사라진다.
+# judge 출력 스키마 — 응답을 JSON 형식으로 요청하고, 파싱 실패 시 재요청한다.
 _JUDGE_RESPONSE_FORMAT = {
     "type": "json_schema",
     "json_schema": {
@@ -144,7 +151,7 @@ class RelevanceFilter:
 
             for paper, sim in zip(group, scores):
                 # 1단계: 임베딩 컷 (abstract 있는 논문만 하드컷).
-                if paper.abstract and sim < fc.embedding_threshold:
+                if (paper.abstract or "").strip() and sim < fc.embedding_threshold:
                     logger.info("임베딩 컷 %s: sim=%.3f < %.2f — %.60s",
                                 paper.uid, sim, fc.embedding_threshold, paper.title)
                     store.mark_filtered(paper, f"embedding_sim={sim:.3f}")

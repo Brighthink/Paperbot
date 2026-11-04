@@ -1,5 +1,5 @@
-"""Figure/table extraction for Slack/Zulip attachments — DocLayout-YOLO + PyMuPDF.
-Slack/Zulip 첨부용 figure·표 추출 — 레이아웃 검출 모델(DocLayout-YOLO)로 박스를 찾고 PyMuPDF로 크롭 렌더한다.
+"""Extract figure and table crops for Markdown output and optional publishers — DocLayout-YOLO + PyMuPDF.
+Markdown 저장 및 선택적 게시용 그림·표 추출 — DocLayout-YOLO로 영역을 찾고 PyMuPDF로 크롭한다.
 
 앞 N페이지를 렌더해 DocLayout-YOLO(DocStructBench 가중치, CPU)로 figure / figure_caption / table /
 table_caption / table_footnote 박스를 검출하고, 캡션마다 가장 가까운 같은 종류의 본체를 붙여
@@ -25,7 +25,7 @@ _MAX_BYTES = 4_000_000          # 크롭 PNG 하나당 크기 상한
 _ZOOM = pymupdf.Matrix(2, 2)    # 크롭 렌더 해상도 (2x ≈ 144dpi)
 _DET_LONG_SIDE = 1024           # 검출용 렌더: 긴 변을 모델 입력 크기(imgsz)에 맞춘다 (내부 리사이즈 손실 없음)
 _CONF = 0.25                    # 검출 신뢰도 하한
-_DEVICE = "cpu"                 # GPU는 요약 모델 전용 — 임베딩 필터와 같은 원칙 (페이지당 ≈0.5s)
+_DEVICE = "cpu"                 # PDF 그림 검출은 CPU에서 실행해 다른 작업과 GPU를 공유하지 않는다 (페이지당 ≈0.5s)
 _CAPTION_GAP = 60.0             # 본체-캡션 세로 간격 상한(pt)
 _FOOTNOTE_GAP = 20.0            # 표 본체-각주 세로 간격 상한(pt)
 _MIN_H_OVERLAP = 0.3            # 본체-캡션 가로 겹침 비율 하한 (좁은 쪽 폭 기준)

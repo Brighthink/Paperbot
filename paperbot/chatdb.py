@@ -1,13 +1,13 @@
 """Chat cache hook: put each summarized paper's full text and summary into zoterobot's text cache.
 챗봇 캐시 연결 — 요약해 올린 논문의 전문(참고문헌 제거, 절단 전)과 요약을 zoterobot 본문 캐시(storage.chat_text_db)에 넣는다.
 
-- 아침 실행(pipeline.process_paper)과 Zulip 되올리기(replay.process)가 발행 직후 store_paper()를 부른다.
+- 논문 처리(pipeline.process_paper)와 Zulip 되올리기(replay.process)가 저장 직후 store_paper()를 부른다.
   Zotero/Drive에 저장하지 않은 논문도 DM 챗봇이 search_papers/read_paper로 찾아 읽을 수 있게 하는 것이 목적 (2026-10-23 사용자 요청).
   캐시 쪽 id는 uid 해시('P…'), 컬렉션 자리에는 topic 이름이 들어간다 (zoterobot/textcache.py의 PAPERBOT_TYPE 참고).
 - backfill()은 DB(papers.db)의 done 논문을 거슬러 채운다: PDF를 다시 받아 본문을 뽑고(GPU·발행 없음), 요약은 Zulip 고정 topic에
   이미 올라간 메시지에서 되읽는다(Slack 시절 것은 요약 없이 본문만 — 나중에 되올리기가 새 요약으로 덮어쓰거나 챗봇 summarize_paper가 만든다).
   `python -m paperbot --backfill-chat [--limit N] [--topic NAME]`. 본문이 이미 있는 논문은 건너뛰므로 여러 번 돌려도 된다.
-- 캐시 쓰기 실패는 경고만 남긴다 — 발행은 이미 끝났고, 다음 날 같은 논문이 다시 요약되지는 않지만 백필로 채울 수 있다.
+- 캐시 쓰기 실패는 경고만 남긴다 — 요약 파일 저장은 끝났으며, 다음 실행에서 같은 논문을 자동 재요약하지는 않는다. 필요하면 백필로 채울 수 있다.
 """
 from __future__ import annotations
 

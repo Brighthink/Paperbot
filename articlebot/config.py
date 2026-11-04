@@ -70,8 +70,8 @@ class ImageConfig:
 
 @dataclass(frozen=True)
 class LLMConfig:
-    base_url: str = "http://localhost:8090/v1"   # llama-swap
-    model: str = "qwen3.8:27b"
+    base_url: str = "https://api.openai.com/v1"   # OpenAI API (or a local OpenAI-compatible endpoint)
+    model: str = "gpt-6-luna"
     max_input_chars: int = 60000   # 본문 절단 상한 (블로그 글은 보통 5k~20k자)
     max_output_tokens: int = 4096
     temperature: float = 0.3

@@ -3,110 +3,103 @@
 #   cp config.example.yaml config.yaml
 
 topics:
-  # Every filter (subject, venues, years, citations) lives here — no code changes needed.
-  # 주제·학회·연도·인용 수 필터는 전부 여기서 조절한다 (코드 수정 없이).
-  - name: "graph-transformer"
-    platform: "slack"               # where this topic is posted: "slack" (default) | "zulip" / 이 topic의 발행처 (기본 slack)
-    channel: "#papers-gt"           # Slack channel for this topic (default: slack.channel) / Slack 채널 (생략 시 slack.channel)
-    zulip_topic: "graph_transformer"  # Zulip only: the fixed Zulip topic (inside zulip.stream) that holds every paper of this topic;
-                                    # omit it to open one Zulip topic per paper (named after the title)
-                                    # Zulip 전용: 이 주제의 논문을 전부 넣을 고정 Zulip topic. 생략하면 논문마다 topic(=제목)
-    # stream: "papers-gt"           # optional: a different Zulip stream for this topic (default: zulip.stream, one stream for all)
-                                    # 선택: 이 topic만 다른 Zulip 스트림으로 (생략 시 zulip.stream 공용 스트림)
-    # Natural-language interest statement. The relevance filter (embedding + LLM judge) scores papers against it.
-    # Write it in English — the embedding model (all-MiniLM-L6-v2) is English-centric.
-    # 관심사 서술 — relevance 필터(임베딩·LLM judge)의 기준. 임베딩 모델이 영어 중심이라 영어로 쓴다.
+  # 주제 설명은 관련성 필터, query는 각 검색 API에 사용됩니다.
+  - name: "ship-performance-prediction"
+    platform: "markdown"
     interest: >
-      Graph Transformer and Graph Mamba family architectures: positional and
-      structural encodings, graph generalization of attention, long-range
-      dependencies, and scalability. Exclude plain GNN application papers.
+      Ship performance prediction from hull geometry and hull-form design parameters, with a focus on
+      surrogate models, uncertainty quantification, and prediction-error decomposition. Include ship
+      hydrodynamic performance, resistance, and powering when the work connects them to hull-form
+      prediction. Exclude unrelated ship operations and generic surrogate-model applications without
+      a ship or hull-form performance context.
     sources:
       semantic_scholar:
-        query: '"graph transformer" | "graph mamba"'   # S2 bulk-search syntax / S2 bulk 검색 문법
-        venues: ["ICLR", "NeurIPS", "ICML", "KDD"]   # empty list = no venue filter / 비면 venue 필터 없음
-        year: "2020-"                # "2024" | "2024-2026" | "2024-"
-        min_citations: 5             # citation floor / 인용 수 하한
-        # sort: "recency" (default) | "citations" — top-cited first; the bot skips papers it already knows and keeps paging
-        # sort: "recency"(기본, 최신순) | "citations"(인용순 — 이미 아는 논문은 건너뛰고 페이지를 넘김)
-      arxiv:
-        enabled: true                # also pull preprints / 프리프린트도 받을지
-        query: 'cat:cs.LG AND (abs:"graph transformer" OR abs:"graph mamba")'   # arXiv search syntax / arXiv 검색 문법
-    # quota: {s2: 2, arxiv: 3}      # per-topic override of the global quota / 이 topic만 쿼터 덮어쓰기
-
-  - name: "cad-reverse-engineering"
-    channel: "#papers-cad"
-    interest: >
-      B-rep based CAD reverse engineering, CAD reconstruction/generation,
-      representation learning for solid models.
-    sources:
-      semantic_scholar:
-        query: '"B-rep" | "CAD reconstruction" | "CAD generation"'
-        venues: ["CVPR", "ICCV", "ECCV", "SIGGRAPH"]
-        year: "2024-"
-        min_citations: 0             # 0 for niche fields; the relevance filter keeps quality / 니치 분야는 0 (필터가 품질을 거름)
+        query: >
+          (ship | hull) + ("ship performance" | "performance prediction" | "hull form" |
+          "ship resistance" | "hydrodynamic performance" | "surrogate model" |
+          "surrogate modeling" | "surrogate modelling" | "uncertainty quantification" |
+          "error decomposition")
+        sort: "recency"
       arxiv:
         enabled: true
-        query: '(cat:cs.CV OR cat:cs.GR) AND (abs:"B-rep" OR abs:"CAD reconstruction")'
+        query: >
+          (cat:physics.flu-dyn OR cat:physics.comp-ph OR cat:cs.CE OR cat:cs.LG OR cat:eess.SY) AND
+          (all:ship OR all:hull) AND
+          (all:"performance prediction" OR all:"ship performance" OR all:"hull form" OR
+          all:"ship resistance" OR all:"hydrodynamic performance" OR all:"surrogate model" OR
+          all:"uncertainty quantification" OR all:"error decomposition")
+
+  - name: "surrogate-based-design-optimization"
+    platform: "markdown"
+    interest: >
+      Sampling methods for building and updating surrogate models used in engineering design
+      optimization, including surrogate-based design optimization (SBDO). Focus on design of
+      experiments, space-filling designs such as Latin hypercube and Sobol sequences, and active or
+      adaptive sampling. Compare sample efficiency, surrogate accuracy, and optimization performance.
+      Exclude sampling studies unrelated to surrogate models and design optimization.
+    sources:
+      semantic_scholar:
+        query: >
+          ("sampling method" | "sampling strategy" | "design of experiments" | "Latin hypercube" |
+          "Sobol sequence" | "space filling" | "active learning" | "adaptive sampling") +
+          ("surrogate model" | "surrogate modeling" | "surrogate modelling" | metamodel) +
+          ("design optimization" | "surrogate based optimization" |
+          "surrogate based design optimization" | SBDO)
+        sort: "recency"
+      arxiv:
+        enabled: true
+        query: >
+          (cat:cs.CE OR cat:math.OC OR cat:cs.LG OR cat:eess.SY) AND
+          (all:"sampling method" OR all:"sampling strategy" OR all:"design of experiments" OR
+          all:"Latin hypercube" OR all:"Sobol sequence" OR all:"space filling" OR
+          all:"active learning" OR all:"adaptive sampling") AND
+          (all:"surrogate model" OR all:metamodel) AND
+          (all:"design optimization" OR all:"surrogate based optimization" OR
+          all:"surrogate based design optimization" OR all:SBDO)
 
 fetch:
   max_results_per_query: 10   # candidates per source per topic / 소스별 검색 후보 수
   arxiv_lookback_days: 14     # only arXiv submissions from the last N days / 최근 N일 제출분만
-  s2_lookback_days: 0         # 0 = off; let each topic's `year` bound the time range (recommended) / 0 = 비활성, topic year에 위임(권장)
+  s2_lookback_days: 0         # no age cutoff; S2 still sorts newest first / 날짜 제한 없음, S2는 최신순 정렬
   s2_max_pages_per_run: 3     # citation-sorted topics only: bulk pages (1000 each) to scan per run / 인용순 topic 전용
   unpaywall_email: ""         # your email for Unpaywall OA lookup when a publisher blocks the PDF (empty = off) / Unpaywall 조회용 이메일 (비우면 미사용)
 
 quota:
-  # Daily publish cap per topic and source. 0 = unlimited. Extra papers wait in the pending queue (FIFO).
-  # 하루 topic×소스별 발행 상한. 0 = 무제한. 초과분은 pending 대기열(FIFO)에서 다음 날 먼저 발행.
+  # Per-run cap per topic and source. 0 = unlimited. Extra papers wait in the pending queue (FIFO).
+  # 실행 1회당 topic×소스별 처리 상한. 0 = 무제한. 초과분은 pending 대기열(FIFO)에 둔다.
   s2_per_topic: 3
   arxiv_per_topic: 2
   pending_max_age_days: 30    # drop pending papers older than this; 0 = never / 이보다 오래 대기한 pending 폐기, 0 = 무제한
 
 filter:
   embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
-  embedding_device: "cpu"     # keep the GPU for the summary model / GPU는 요약 모델 전용
+  embedding_device: "cpu"     # keep filtering on CPU / 필터는 CPU에서 실행
   embedding_threshold: 0.25   # cosine(interest, title+abstract) floor / cosine 하한
   llm_judge: true             # re-score survivors with the LLM (0-10) / 임베딩 통과분을 LLM으로 재채점
   judge_threshold: 6          # 0-10 / 점수 하한
 
 llm:
-  base_url: "http://localhost:8090/v1"    # llama-swap in front of llama-server, OpenAI-compatible / llama-swap(llama-server) OpenAI 호환 엔드포인트
-  model: "qwen3.8:27b"        # fits two 16GB GPUs; use a ~9b model on one GPU / 16GB GPU 2장 기준, 1장이면 9b급
-  num_ctx: 65536              # must match llama-server -c in the llama-swap config / llama-swap 설정의 llama-server -c와 일치
-  max_input_chars: 150000     # paper text sent to the model (fits in num_ctx) / 본문 입력 상한
+  base_url: "https://api.openai.com/v1"  # OpenAI API; local llama-swap is also supported / OpenAI API (로컬 llama-swap도 지원)
+  model: "gpt-6-luna"
+  num_ctx: 32768              # used only by an optional local endpoint; hosted API uses max_input_chars / 선택적 로컬 서버용, API는 max_input_chars 적용
+  max_input_chars: 150000     # paper text sent to the model / 모델에 보낼 본문 상한
   max_output_tokens: 8192     # summary length cap / 요약 출력 상한
   temperature: 0.3
   language: "ko"              # summary language / 요약 언어
 
-slack:
-  channel: "#papers"          # default channel — invite the bot first / 기본 채널 (봇 초대 필수)
-  attach_figure: true         # attach key figures to the thread (needs files:write) / 대표 figure 첨부 (files:write 스코프)
-  max_figures: 3              # figures per paper / 논문당 figure 수
-  max_tables: 3               # tables per paper, caption included / 논문당 표 수 (캡션 포함)
-  dry_run: false              # true = print to stdout instead of posting (no token needed) / 전송 대신 stdout (토큰 불필요)
-  # The bot token comes from the environment variable SLACK_BOT_TOKEN — never put it here.
-  # 봇 토큰은 환경변수 SLACK_BOT_TOKEN으로 — config에 넣지 않는다.
+markdown:
+  max_figures: 3              # save up to this many detected figure crops / 감지한 그림을 논문당 최대 저장
+  max_tables: 3               # save up to this many detected table crops / 감지한 표를 논문당 최대 저장
 
-zulip:                        # used by topics with platform: "zulip" — one Zulip topic (= paper title) per paper in the stream
-                              # platform: "zulip"인 topic이 쓴다 — 스트림 안에 논문당 Zulip topic(=제목) 하나
-  config_file: "./zuliprc"    # fallback zuliprc file; preferred: export ZULIP_EMAIL / ZULIP_API_KEY / ZULIP_SITE in ~/.paperbot_env
-                              # 예비용 zuliprc 파일 — 보통은 ~/.paperbot_env에 ZULIP_EMAIL·ZULIP_API_KEY·ZULIP_SITE를 export 하면 된다
-  stream: "papers"            # the one stream all zulip topics post to (Zulip topic = topics[].zulip_topic, or one per paper) — subscribe the bot first
-                              # zulip topic이 전부 글을 올리는 공용 스트림(Zulip topic은 topics[].zulip_topic, 없으면 논문당 하나) — 봇 구독 필수
-  attach_figure: true         # upload key figures into the same topic / 대표 figure를 같은 topic에 업로드
-  max_figures: 3
-  max_tables: 3
-  dry_run: false              # true = print instead of posting / 전송 대신 stdout
-  replay: false               # true = also post every paper already in the DB (e.g. sent to Slack earlier) that is not yet in
-                              # Zulip (checked against the stream's messages/topics), oldest first; afterwards only the normal logic remains
-                              # true면 DB에 있는 done 논문(예: Slack으로 먼저 나간 것) 중 Zulip에 아직 없는 것을 전부 되올림 — 다 올리면 원래 로직만
-  replay_per_run: 3           # old papers per topic per run; while a topic is replaying its new papers wait in pending, then the normal
-                              # quota resumes (0 = all remaining at once; 1–2 min of GPU each)
-                              # 실행당 topic별 옛 논문 수 — 되올리는 동안 그 topic 신규는 pending 보류, 끝나면 원래 쿼터 (0 = 전부 한 번에)
+gmail:
+  enabled: false              # true면 요약한 논문마다 Gmail로 발송 / send one email per summarized paper
+  to: ""                      # recipient email address / 수신 주소
+  credentials_file: "~/.config/paperbot/gmail_credentials.json" # OAuth Desktop client JSON
+  token_file: "~/.config/paperbot/gmail_token.json"             # locally authorized token; keep private
+  subject_prefix: "[Paperbot]"
 
 storage:
-  db_path: "./data/papers.db" # state DB (sqlite); use an absolute path for a NAS / 처리 이력 DB (NAS는 절대 경로)
-  pdf_dir: "./data/pdfs"      # PDF scratch dir / PDF 임시 저장
+  db_path: "./data/papers.db" # sqlite search history / 검색 이력 DB
+  pdf_dir: "./data/pdfs"      # temporary PDF files / PDF 임시 저장
+  markdown_dir: "./data/markdown" # per-paper folders with summary and images / 요약·이미지 논문별 폴더
   keep_pdfs: false            # delete PDFs after summarizing / 요약 후 PDF 삭제
-  chat_text_db: ""            # zoterobot text cache (chat.text_db) — store each summarized paper's full text + summary so the DM chat can search it; empty = off
-                              # zoterobot 본문 캐시 경로 — 요약한 논문의 전문·요약을 넣어 DM 챗봇이 찾게 한다 (비면 끔)

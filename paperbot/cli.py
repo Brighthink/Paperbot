@@ -19,10 +19,10 @@ _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="paperbot — local-LLM paper summary bot for Slack and Zulip")
+    p = argparse.ArgumentParser(description="paperbot — search papers, summarize them, and save Markdown files")
     p.add_argument("--config", default=os.path.join(_REPO_DIR, "config.yaml"),
                    help="config.yaml 경로 (기본: 리포 루트의 config.yaml)")
-    p.add_argument("--dry-run", action="store_true", help="Slack·Zulip 전송 대신 stdout 출력")
+    p.add_argument("--dry-run", action="store_true", help="Markdown 파일 대신 stdout으로 미리보기 (DB에는 처리 완료로 기록)")
     p.add_argument("--limit", type=int, default=None, help="처리할 논문 수 제한 (테스트용)")
     p.add_argument("--topic", default=None, help="특정 topic만 처리 (config의 name)")
     p.add_argument("--backfill", action="store_true", help="lookback 필터를 끄고 검색 결과 전부 처리 (첫 실행용)")
@@ -30,6 +30,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--backfill-chat", action="store_true",
                    help="DB의 done 논문 전문(+Zulip에 있는 요약)을 챗봇 캐시(storage.chat_text_db)에 채움 — PDF 재다운로드, GPU·발행 없음. "
                         "--limit/--topic 적용, 이미 본문이 있는 논문은 건너뜀")
+    p.add_argument("--authorize-gmail", action="store_true",
+                   help="브라우저에서 Gmail OAuth 승인을 한 번 진행하고 로컬 토큰을 저장")
     return p.parse_args(argv)
 
 
@@ -98,8 +100,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     setup_logging(cfg)
 
+    if args.authorize_gmail:
+        from .gmail import GmailError, authorize_gmail
+        try:
+            authorize_gmail(cfg.gmail)
+        except GmailError as e:
+            logger.error("Gmail OAuth 설정 실패: %s", e)
+            return 1
+        logger.info("Gmail OAuth 승인 완료. 토큰은 config의 gmail.token_file에 저장했습니다.")
+        return 0
+
     if args.backfill_chat:
-        # 아침 실행과 lock을 공유하지 않는다 — GPU·발행·papers.db 쓰기가 없어 동시에 돌아도 되고, 1시간짜리 백필이 그날 실행을 막으면 안 된다
+        # 일반 실행과 lock을 공유하지 않는다 — 백필은 papers.db 이력만 읽으므로 동시에 실행해도 된다.
         from . import chatdb
         if not cfg.storage.chat_text_db:
             print("[설정 오류] storage.chat_text_db가 비어 있습니다.", file=sys.stderr)

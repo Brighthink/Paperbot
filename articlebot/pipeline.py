@@ -310,7 +310,11 @@ def run(cfg: Config, args) -> int:
         logger.error("발행 설정 오류: %s", e)
         return 1
     http = Http(cfg.fetch)
-    client = llm.make_client(cfg)
+    try:
+        client = llm.make_client(cfg)
+    except llm.LLMError as e:
+        logger.error("LLM 설정 오류: %s", e)
+        return 2
     used_llm = False
     rc = 0
 

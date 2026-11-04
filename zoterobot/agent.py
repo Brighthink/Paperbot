@@ -1,14 +1,14 @@
-"""DM chat agent: qwen classifies the question (search / question / comparing), picks the tool and answers.
-DM 챗봇 에이전트 — qwen이 질문 유형(search·question·comparing)을 판단해 도구를 골라 쓰고 답한다.
+"""DM chat agent: the configured model classifies the question and picks tools.
+DM 챗봇 에이전트 — 설정한 모델이 질문 유형(search·question·comparing)을 판단해 도구를 골라 쓴다.
 
 - search_papers: 주제 검색 → 편당 초록·발췌·저장된 요약 앞부분 → 모델이 3~5줄 요약
 - read_paper: 특정 논문 질문 → 본문 발췌(focus) → 본문 근거로만 답 (id 대신 제목도 받음)
 - compare_papers: 여러 논문 → 편당 자료(요약+발췌)를 남은 예산을 나눠 배분 → 공통점·차이점
-- summarize_paper(summary.py): 캐시 원문 전체를 paperbot 요약기로 요약(편당 2~3분) — 질문당 summaries_per_question회,
+- summarize_paper(summary.py): 캐시 원문 전체를 paperbot 요약기로 요약 — 질문당 summaries_per_question회,
   저장된 요약은 횟수에 세지 않는다.
 
-- llama-swap의 OpenAI 호환 /v1/chat/completions SSE 스트리밍 (tools, enable_thinking=false). 임베딩 모델 없이 도구 호출로
-  근거를 찾는다. 모델 유지 시간은 llama-swap ttl(10분). 스트림이 끝 표시 없이 끊기면(언로드·재시작) 한 번 다시 요청한다.
+- OpenAI-compatible /v1/chat/completions SSE 스트리밍 (tools). GPT-6 Luna uses hosted tool calling; local llama.cpp
+  adds enable_thinking=false. 임베딩 모델 없이 도구 호출로 근거를 찾는다. A truncated stream is retried once.
   도구 호출 기록은 OpenAI 형식: 인자는 JSON 문자열, tool_call_id로 결과 연결.
 - 도구 라운드는 max_tool_steps까지, 마지막 라운드는 도구 없이 답하게 강제한다.
 - 입력 길이는 글자 상한이 아니라 토큰 예산(budget.py)으로 제어한다:
@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -118,6 +119,8 @@ class Agent:
         if self._server_ctx is not None:
             return
         self._server_ctx = self.cfg.ctx_tokens
+        if llmserver.is_openai_api(self.cfg.llm_url):
+            return
         actual = llmserver.server_ctx(self.cfg.llm_url, self.cfg.model)   # 확인 실패면 None → 설정값
         if actual and actual != self.cfg.ctx_tokens:
             logger.warning("서버 실제 컨텍스트 %d ≠ config ctx_tokens %d — 실제 값으로 예산을 잡습니다",
@@ -240,22 +243,30 @@ class Agent:
 
     def _chat(self, messages: list[dict], use_tools: bool, on_partial=None,
               max_tokens: int | None = None) -> tuple[str, list[dict], dict]:
-        """llama-swap /v1/chat/completions 1회 호출(SSE 스트리밍) → (본문, tool_calls, 통계).
+        """Configured /v1/chat/completions endpoint 1회 호출(SSE 스트리밍) → (본문, tool_calls, 통계).
 
         tool_calls는 OpenAI 형식 [{id, type: function, function: {name, arguments: JSON 문자열}}].
         통계: prompt_tokens(캐시 재사용분 포함 전체 입력 토큰), cached_tokens, prompt_s, load_s(콜드 스타트였으면
         첫 청크까지 걸린 시간 − 프롬프트 처리 시간 ≈ 모델 로드 시간, 아니면 0).
         스트림이 끝 표시 없이 끊기면(다른 봇의 언로드·서버 재시작) 2초 뒤 한 번 다시 요청한다 — 모델은 자동으로 다시 올라간다.
         """
+        hosted_api = llmserver.is_openai_api(self.cfg.llm_url)
         payload = {"model": self.cfg.model, "messages": messages, "stream": True,
                    "stream_options": {"include_usage": True},
-                   "temperature": self.cfg.temperature, "max_tokens": max_tokens or self.cfg.max_output_tokens,
-                   "chat_template_kwargs": {"enable_thinking": False}}
+                   "temperature": self.cfg.temperature}
+        if hosted_api:
+            if not os.environ.get("OPENAI_API_KEY", "").strip():
+                raise LLMError("GPT-6 Luna API를 쓰려면 ~/.paperbot_env에 OPENAI_API_KEY를 설정하세요.")
+            payload["max_completion_tokens"] = max_tokens or self.cfg.max_output_tokens
+            payload["reasoning_effort"] = "none"
+        else:
+            payload["max_tokens"] = max_tokens or self.cfg.max_output_tokens
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
         if use_tools:
             payload["tools"] = TOOLS
         last: Exception | None = None
         for attempt in (1, 2):
-            cold = not llmserver.is_loaded(self.cfg.llm_url, self.cfg.model)
+            cold = not hosted_api and not llmserver.is_loaded(self.cfg.llm_url, self.cfg.model)
             try:
                 return self._stream_once(payload, on_partial, cold)
             except _Truncated as e:
@@ -270,7 +281,10 @@ class Agent:
         ttfb: float | None = None
         content, slots, usage, timings, finished = "", {}, {}, {}, False
         try:
-            with requests.post(f"{self.cfg.llm_url}/v1/chat/completions", json=payload, stream=True,
+            headers = {}
+            if llmserver.is_openai_api(self.cfg.llm_url):
+                headers["Authorization"] = f"Bearer {os.environ['OPENAI_API_KEY'].strip()}"
+            with requests.post(f"{self.cfg.llm_url}/v1/chat/completions", json=payload, headers=headers, stream=True,
                                timeout=(10, 600)) as r:
                 if r.status_code != 200:
                     raise LLMError(f"LLM 서버 HTTP {r.status_code}: {r.text[:300]}")

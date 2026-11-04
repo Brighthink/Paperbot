@@ -1,7 +1,7 @@
-"""llama-swap helpers: running-model lookup, server context check, and a safe unload.
+"""Local llama-swap helpers: running-model lookup, server context check, and a safe unload.
 llama-swap(로컬 LLM 프록시) 관리 헬퍼 — 실행 중 모델 조회·실제 컨텍스트 확인·안전한 언로드.
 
-봇들(paperbot·articlebot·zoterobot)은 llama-swap(기본 http://127.0.0.1:8090)의 OpenAI 호환 /v1로 모델을 부른다.
+로컬 모델을 선택한 경우 봇들은 llama-swap(기본 http://127.0.0.1:8090)의 OpenAI 호환 /v1로 모델을 부른다.
 llama-swap은 요청이 오면 llama-server(llama.cpp CUDA 빌드)를 띄우고 마지막 요청 후 ttl이 지나면 내린다
 (설정: ~/llama-swap/config.yaml).
 
@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -30,8 +30,15 @@ def origin(base_url: str) -> str:
     return base_url.rstrip("/").removesuffix("/v1")
 
 
+def is_openai_api(base_url: str) -> bool:
+    """Whether this endpoint is OpenAI's hosted API rather than llama-swap."""
+    return (urlsplit(base_url).hostname or "").lower() == "api.openai.com"
+
+
 def running(origin_url: str, timeout: float = 5.0) -> list[dict]:
     """llama-swap /running → [{'model', 'state', 'proxy', 'ttl', …}]. 연결 실패는 예외 그대로."""
+    if is_openai_api(origin_url):
+        return []
     r = requests.get(f"{origin_url}/running", timeout=timeout)
     r.raise_for_status()
     return r.json().get("running") or []
@@ -102,6 +109,8 @@ def unload(origin_url: str, model: str, *, wait_s: float = 600.0, poll_s: float 
     다른 봇의 요청(zoterobot DM 등)이 진행 중이면 끝날 때까지 poll_s 간격으로 기다리고, wait_s가 지나도 바쁘면
     내리지 않고 False — 그 경우 llama-swap ttl이 마지막 요청 뒤에 내린다. llama-swap에 닿지 않아도 False.
     """
+    if is_openai_api(origin_url):
+        return True  # Hosted models have no local process to unload.
     deadline = time.monotonic() + wait_s
     told = False
     idle = 0

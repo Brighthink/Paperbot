@@ -1,3 +1,3 @@
-"""paperbot — local-LLM paper summary bot (Semantic Scholar + arXiv → llama.cpp via llama-swap → Slack/Zulip)."""
+"""paperbot — Semantic Scholar/arXiv search → GPT summary → per-paper Markdown files."""
 
 __version__ = "0.3.0"

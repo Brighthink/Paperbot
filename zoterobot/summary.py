@@ -6,7 +6,7 @@ summarize_paper 도구 — 논문 본문 전체를 paperbot 요약기로 전문 
 - PDF 예비 경로: Zotero 항목은 API로 첨부를 조회해 linked_file(attachments:…) → rclone으로 Drive에서, imported_file/url →
   Zotero 저장소에서 받는다(Drive 우선). Drive 전용 문서는 동기화가 기록한 경로(meta 'drive_paths').
 - 본문 처리는 paperbot extractor와 같다(strip_references → 정리 → max_input_chars 절단) — 아침 요약과 같은 입력.
-- 요약 LLM: paperbot.summarizer.summarize (OpenAI 호환 /v1, 같은 모델이라 VRAM 추가 없음). 실측 편당 2~3분.
+- 요약 LLM: paperbot.summarizer.summarize (paperbot과 같은 configured endpoint/model).
 - 결과는 캐시 summaries 테이블에 저장 — 같은 논문은 다시 요약하지 않고(force 제외), read_paper 결과 앞에도 붙어
   후속 질문에 쓰인다.
 """
