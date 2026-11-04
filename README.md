@@ -1,6 +1,6 @@
 # Paperbot
 
-논문을 검색하고, 관련 논문을 GPT-6 Luna로 요약한 뒤 논문별 폴더에 Markdown과 추출한 그림·표 파일을 저장합니다. 선택적으로 요약마다 Gmail로 Markdown 본문과 그림을 보낼 수 있으며 PDF는 메일에 첨부하지 않습니다. 실행은 명령을 직접 입력했을 때만 시작됩니다. (이 코드는 https://github.com/blahblah116/Paper_Bot을 기반으로 수정하였습니다.)
+논문을 검색하고, 관련 논문을 GPT-6 Luna로 요약한 뒤 논문별 폴더에 Markdown과 추출한 그림·표 파일을 저장합니다. 선택적으로 요약마다 Gmail로 Markdown 본문과 그림을 보낼 수 있으며 PDF는 메일에 첨부하지 않습니다. 실행은 명령을 직접 입력했을 때만 시작됩니다. (이 코드는 https://github.com/blahblah116/Paper_Bot 을 기반으로 수정하였습니다.)
 
 ## 동작 방식
 
